@@ -3,6 +3,8 @@ ScorpMP is a barebones TCP-based multiplayer system for Unity that works general
 
 I advise checking out the example scene if you want to use this, though make sure to set the ScorpMP_Server gameObject to inactive when building the game for testing
 
+Requires Newtonsoft to function (com.unity.nuget.newtonsoft-json)
+
 
 # Classes
 - ScorpMP_Server.cs: Listens for connections, manages data receiving and data sending
