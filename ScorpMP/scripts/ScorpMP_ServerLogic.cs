@@ -11,26 +11,62 @@ public class ScorpMP_ServerLogic : MonoBehaviour
 {
     public ScorpMP_Server server;
 
+    public float Epoch()
+    {
+        return (float)(DateTime.UtcNow - DateTime.UnixEpoch).TotalSeconds;
+    }
+
+    string jsonRemainder = "";
+    string lastExc = "";
     public void OnMessageReceived(TcpClient client, string message)
     {
-        List<JObject> jsons = new List<JObject>();
-
-        using (var stringReader = new StringReader(message))
-        using (var jsonReader = new JsonTextReader(stringReader))
+        try
         {
-            jsonReader.SupportMultipleContent = true;
+            message = jsonRemainder + message;
+            List<JObject> jsons = new List<JObject>();
 
-            var serializer = new JsonSerializer();
-            while (jsonReader.Read())
+            jsonRemainder = "";
+            for (int i = 0; i < message.Length; i++)
             {
-                var obj = serializer.Deserialize<JObject>(jsonReader);
-                if (obj != null)
-                    jsons.Add(obj);
+                jsonRemainder += message[i];
+                if (jsonRemainder[jsonRemainder.Length - 1] == '}')
+                {
+                    try
+                    {
+                        JObject json = (JObject)JsonConvert.DeserializeObject(jsonRemainder);
+                        if (json != null)
+                        {
+                            jsons.Add(json);
+                            jsonRemainder = "";
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        if (e.GetType().Name == "IndexOutOfRangeException")
+                        {
+                            jsonRemainder = "";
+                        }
+                        else
+                        {
+                            lastExc = e.GetType().Name;
+                        }
+                    }
+                }
             }
-        }
+            if (jsonRemainder.Length > 512)
+            {
+                jsonRemainder = "";
+                server.log("JSON remainder had to be cleared due to too much buildup, latest exception: " + lastExc, 1);
+            }
 
-        for (int i = 0; i < jsons.Count; i++)
-            OnMessageReceivedManaged(client, jsons[i]);
+            for (int i = 0; i < jsons.Count; i++)
+                OnMessageReceivedManaged(client, jsons[i]);
+        }
+        catch(Exception e)
+        {
+            server.log("Error while reading packets: " + e.GetType().Name + ": " + e.Message, 1);
+            server.log("Payload in question: " + message, 1);
+        }
     }
     public void OnMessageReceivedManaged(TcpClient client, JObject data)
     {
@@ -93,10 +129,7 @@ public class ScorpMP_ServerLogic : MonoBehaviour
                 switch ((string)data["base"])
                 {
                     case "heartbeat":
-                        server.connections[clientSessionId].LastHeartbeat = serverTime;
-                        break;
-                    case "terminate_connection":
-                        server.CloseConnection(server.connections[clientSessionId]);
+                        server.connections[clientSessionId].LastHeartbeat = Epoch();
                         break;
                 }
             }
@@ -108,19 +141,27 @@ public class ScorpMP_ServerLogic : MonoBehaviour
         }
     }
 
-    public float serverTime = 0f;
+    float lastHeartbeatSent = 0f;
     public void HandleHeartbeat()
     {
-        serverTime += Time.deltaTime;
-
         List<ScorpMP_Server.ClientData> drop_connections = new List<ScorpMP_Server.ClientData>();
         foreach (KeyValuePair<int, ScorpMP_Server.ClientData> connection in server.connections)
         {
-            if (serverTime - connection.Value.LastHeartbeat > 30f)
+            if (Epoch() - connection.Value.LastHeartbeat > 30f)
                 drop_connections.Add(connection.Value);
         }
         for (int i = 0; i < drop_connections.Count; i++)
             server.CloseConnection(drop_connections[i], "Timed out");
+
+        lastHeartbeatSent += Time.deltaTime;
+        if (lastHeartbeatSent > 2f)
+        {
+            lastHeartbeatSent = 0f;
+            JObject packet = new JObject();
+            packet["base"] = "heartbeat";
+            foreach (KeyValuePair<int, ScorpMP_Server.ClientData> connection in server.connections)
+                server.SendMessageToClient(connection.Value.Client, JsonConvert.SerializeObject(packet));
+        }
     }
 
     public void PlayerAdd(ScorpMP_Server.ClientData player)

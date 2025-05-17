@@ -3,6 +3,7 @@ using Newtonsoft.Json.Linq;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 
 public class ScorpMP_ClientLogic : MonoBehaviour
@@ -20,7 +21,7 @@ public class ScorpMP_ClientLogic : MonoBehaviour
         yield return new WaitForSecondsRealtime(1f);
         while (true)
         {
-            if (doConnect && (client.client == null || !client.client.Connected))
+            if (doConnect && !client.isConnected)
                 client.Connect(client.serverIP, client.serverPort);
             yield return new WaitForSecondsRealtime(5f);
         }
@@ -57,26 +58,57 @@ public class ScorpMP_ClientLogic : MonoBehaviour
         return true;
     }
 
+    string jsonRemainder = "";
+    string lastExc = "";
     public void OnMessageReceived(string message)
     {
-        List<JObject> jsons = new List<JObject>();
-
-        using (var stringReader = new System.IO.StringReader(message))
-        using (var jsonReader = new JsonTextReader(stringReader))
+        try
         {
-            jsonReader.SupportMultipleContent = true;
+            message = jsonRemainder + message;
+            List<JObject> jsons = new List<JObject>();
 
-            var serializer = new JsonSerializer();
-            while (jsonReader.Read())
+            jsonRemainder = "";
+            for (int i = 0; i < message.Length; i++)
             {
-                var obj = serializer.Deserialize<JObject>(jsonReader);
-                if (obj != null)
-                    jsons.Add(obj);
+                jsonRemainder += message[i];
+                if (jsonRemainder[jsonRemainder.Length-1] == '}')
+                {
+                    try
+                    {
+                        JObject json = (JObject)JsonConvert.DeserializeObject(jsonRemainder);
+                        if (json != null)
+                        {
+                            jsons.Add(json);
+                            jsonRemainder = "";
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        if (e.GetType().Name == "IndexOutOfRangeException")
+                        {
+                            jsonRemainder = "";
+                        }
+                        else
+                        {
+                            lastExc = e.GetType().Name;
+                        }
+                    }
+                }
             }
-        }
+            if (jsonRemainder.Length > 512)
+            {
+                jsonRemainder = "";
+                client.log("JSON remainder had to be cleared due to too much buildup, latest exception: " + lastExc, 1);
+            }
 
-        for (int i = 0; i < jsons.Count; i++)
-            OnMessageReceivedManaged(jsons[i]);
+            for (int i = 0; i < jsons.Count; i++)
+                OnMessageReceivedManaged(jsons[i]);
+        }
+        catch (Exception e)
+        {
+            client.log("Error while reading packets: " + e.GetType().Name + ": " + e.Message, 1);
+            client.log("Payload in question: " + message, 1);
+        }
     }
 
     public void OnMessageReceivedManaged(JObject data)
@@ -92,6 +124,9 @@ public class ScorpMP_ClientLogic : MonoBehaviour
                         break;
                     case "server_error":
                         client.log("Server-side error: " + data["message"], 1);
+                        break;
+                    case "heartbeat":
+                        lastHeartbeatReceived = 0;
                         break;
                     case "player_added":
                         try
@@ -165,6 +200,7 @@ public class ScorpMP_ClientLogic : MonoBehaviour
     }
 
     float lastHeartbeatSent = 0f;
+    float lastHeartbeatReceived = 0f;
     public void HandleHeartbeat()
     {
         lastHeartbeatSent += Time.deltaTime;
@@ -177,6 +213,10 @@ public class ScorpMP_ClientLogic : MonoBehaviour
 
             lastHeartbeatSent = 0f;
         }
+
+        lastHeartbeatReceived += Time.deltaTime;
+        if (lastHeartbeatReceived > 30f)
+            client.ConnectionClosed();
     }
 
     IEnumerator sendUpdateLater(int i)
@@ -189,24 +229,39 @@ public class ScorpMP_ClientLogic : MonoBehaviour
     List<int> removePlayerBuffer = new List<int>();
     void Update()
     {
-        HandleHeartbeat();
-
-        if (addPlayerBuffer.Count > 0)
+        if (client.isConnected)
         {
-            foreach(int i in addPlayerBuffer)
+            if (client.client == null)
             {
-                client.playerList.CreateNewPlayer(i);
-
-                if (localPlayer)
-                    StartCoroutine(sendUpdateLater(i));
+                client.ConnectionClosed();
+                return;
+            } else if (!client.client.Connected) {
+                client.ConnectionClosed();
+                return;
             }
-            addPlayerBuffer.Clear();
-        }
-        if (removePlayerBuffer.Count > 0)
-        {
-            foreach (int i in removePlayerBuffer)
-                client.playerList.RemoveOldPlayer(i);
-            removePlayerBuffer.Clear();
+
+            HandleHeartbeat();
+
+            if (addPlayerBuffer.Count > 0)
+            {
+                foreach (int i in addPlayerBuffer)
+                {
+                    client.playerList.CreateNewPlayer(i);
+
+                    if (localPlayer)
+                        StartCoroutine(sendUpdateLater(i));
+                }
+                addPlayerBuffer.Clear();
+            }
+            if (removePlayerBuffer.Count > 0)
+            {
+                foreach (int i in removePlayerBuffer)
+                    client.playerList.RemoveOldPlayer(i);
+                removePlayerBuffer.Clear();
+            }
+
+            if (Input.GetKeyDown(KeyCode.H))
+                client.ConnectionClosed();
         }
     }
 
@@ -228,9 +283,23 @@ public class ScorpMP_ClientLogic : MonoBehaviour
     public ScorpMP_LocalPlayer localPlayer;
     public void UpdateLocalPlayer(Transform player)
     {
-        if (!localPlayer)
-            localPlayer = player.GetComponent<ScorpMP_LocalPlayer>();
+        if (client.isConnected && client.sessionId != -1)
+        {
+            if (!localPlayer)
+                localPlayer = player.GetComponent<ScorpMP_LocalPlayer>();
 
-        SendLocalPlayerData(player);
+            SendLocalPlayerData(player);
+        }
+    }
+
+    public void RemoveAllPlayers()
+    {
+        foreach (KeyValuePair<int, ScorpMP_GlobalPlayer> player in client.playerList.players)
+            removePlayerBuffer.Add(player.Key);
+    }
+
+    public void CloseConnection()
+    {
+        RemoveAllPlayers();
     }
 }

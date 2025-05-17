@@ -25,14 +25,11 @@ public class ScorpMP_LocalPlayer : MonoBehaviour
         {
             yield return new WaitForSeconds(interval);
 
-            if (client.client != null && client.client.Connected && client.sessionId != -1)
+            if (Vector3.Distance(syncedPosition, transform.position) > movementThreshold || Quaternion.Angle(syncedRotation, transform.rotation) > rotationThreshold)
             {
-                if (Vector3.Distance(syncedPosition, transform.position) > movementThreshold || Quaternion.Angle(syncedRotation, transform.rotation) > rotationThreshold)
-                {
-                    client.clientLogic.UpdateLocalPlayer(transform);
-                    syncedPosition = transform.position;
-                    syncedRotation = transform.rotation;
-                }
+                client.clientLogic.UpdateLocalPlayer(transform);
+                syncedPosition = transform.position;
+                syncedRotation = transform.rotation;
             }
         }
     }

@@ -7,6 +7,7 @@ using UnityEngine;
 using System.Collections.Generic;
 using Newtonsoft.Json;
 using System;
+using TMPro;
 
 public class ScorpMP_Server : MonoBehaviour
 {
@@ -25,6 +26,7 @@ public class ScorpMP_Server : MonoBehaviour
 
     public int serverPort = 7765;
     public bool doLog = true;
+    public TextMeshProUGUI visualLog;
 
     TcpListener listener;
     Thread listenerThread;
@@ -33,6 +35,8 @@ public class ScorpMP_Server : MonoBehaviour
     public Dictionary<int, ClientData> connections = new Dictionary<int, ClientData>();
 
     public ScorpMP_ServerLogic serverLogic;
+
+    List<string> visualLogQueue = new List<string>();
 
     public void log(string message, int type = 0)
     {
@@ -50,6 +54,8 @@ public class ScorpMP_Server : MonoBehaviour
                     Debug.LogError("[Server ERROR] " + message);
                     break;
             }
+            if (visualLog)
+                visualLogQueue.Add(message + "\n");
         }
     }
     
@@ -58,6 +64,16 @@ public class ScorpMP_Server : MonoBehaviour
         listenerThread = new Thread(ListenForClients);
         listenerThread.IsBackground = true;
         listenerThread.Start();
+    }
+
+    private void Update()
+    {
+        if (visualLog && visualLogQueue.Count > 0)
+        {
+            foreach(string i in visualLogQueue)
+                visualLog.text += i + "\n";
+            visualLogQueue.Clear();
+        }
     }
 
     void ListenForClients()
@@ -72,28 +88,31 @@ public class ScorpMP_Server : MonoBehaviour
             while (true)
             {
                 TcpClient client = listener.AcceptTcpClient();
+                client.SendBufferSize = 16384;
+                client.ReceiveBufferSize = 16384;
+
+                int sid = nextId;
+                nextId++;
 
                 JObject data = new JObject();
                 data["base"] = "establish";
-                data["id"] = nextId;
+                data["id"] = sid;
                 SendMessageToClient(client, JsonConvert.SerializeObject(data));
-                connections.Add(nextId, new ClientData(nextId, client, serverLogic.serverTime));
+                connections.Add(sid, new ClientData(sid, client, serverLogic.Epoch()));
 
-                log("Client (" + nextId.ToString() + ") connected");
+                log("Client (" + sid.ToString() + ") connected");
 
-                serverLogic.PlayerAdd(connections[nextId]);
+                serverLogic.PlayerAdd(connections[sid]);
 
-                Thread clientThread = new Thread(() => HandleClient(client, nextId));
+                Thread clientThread = new Thread(() => HandleClient(client, sid));
                 clientThread.IsBackground = true;
                 clientThread.Start();
-
-                nextId++;
             }
         }
         catch(Exception e)
         {
             if (e.GetType().Name == "SocketException")
-                log("Error occured likely due to server exiting abruptly: " + e.GetType().Name + ": " + e.Message, 1);
+                log("Error occured likely due to server exiting abruptly: " + e.GetType().Name + ": " + e.Message);
             else
                 log("Error in ListenForClients thread: "+e.GetType().Name+": "+e.Message, 2);
         }
@@ -109,7 +128,9 @@ public class ScorpMP_Server : MonoBehaviour
         NetworkStream stream = client.GetStream();
         byte[] buffer = new byte[1024];
 
-        while (client.Connected)
+        bool clientConnected = true;
+        Socket socket = client.Client;
+        while (clientConnected)
         {
             if (stream.DataAvailable)
             {
@@ -117,6 +138,9 @@ public class ScorpMP_Server : MonoBehaviour
                 OnClientMessage(client, message);
             }
             Thread.Sleep(10);
+
+            try { clientConnected = !(socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0); }
+            catch(ObjectDisposedException) { break; }
         }
 
         if (connections.ContainsKey(sessionId))
@@ -125,7 +149,9 @@ public class ScorpMP_Server : MonoBehaviour
 
     public void CloseConnection(ClientData c, string reason = "Disconnected")
     {
-        c.Client.Close();
+        if (c.Client != null && c.Client.Connected)
+            c.Client.Close();
+
         try { connections.Remove(c.SessionId); } catch { }
 
         log("Client ("+c.SessionId+") disconnected: " + reason);
@@ -140,7 +166,15 @@ public class ScorpMP_Server : MonoBehaviour
 
     public void SendMessageToClient(TcpClient client, string message)
     {
-        byte[] response = Encoding.UTF8.GetBytes(message);
-        client.GetStream().Write(response, 0, response.Length);
+        try
+        {
+            byte[] response = Encoding.UTF8.GetBytes(message);
+            client.GetStream().Write(response, 0, response.Length);
+        }
+        catch (Exception e)
+        {
+            log("Error while sending message to client: " + e.GetType().Name + ": " + e.Message, 1);
+            log("Packet in question: " + message, 1);
+        }
     }
 }

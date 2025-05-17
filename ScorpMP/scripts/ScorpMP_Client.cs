@@ -15,6 +15,7 @@ public class ScorpMP_Client : MonoBehaviour
     public TcpClient client;
     public NetworkStream stream;
     Thread receiveThread;
+    public bool isConnected = false;
 
     public ScorpMP_ClientLogic clientLogic;
     public ScorpMP_PlayerList playerList;
@@ -59,12 +60,16 @@ public class ScorpMP_Client : MonoBehaviour
             client = new TcpClient();
             client.Connect(ip, port);
             stream = client.GetStream();
+            client.SendBufferSize = 16384;
+            client.ReceiveBufferSize = 16384;
 
-            log("Established connection with server");
+            isConnected = true;
 
             receiveThread = new Thread(ReceiveData);
             receiveThread.IsBackground = true;
             receiveThread.Start();
+
+            log("Established connection with server");
         }
         catch (Exception e)
         {
@@ -79,7 +84,8 @@ public class ScorpMP_Client : MonoBehaviour
     {
         byte[] buffer = new byte[1024];
 
-        while (client.Connected)
+        Socket socket = client.Client;
+        while (isConnected)
         {
             if (stream.DataAvailable)
             {
@@ -88,7 +94,18 @@ public class ScorpMP_Client : MonoBehaviour
                 OnServerMessage(response);
             }
             Thread.Sleep(10);
+
+            try
+            {
+                if (socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0)
+                    break;
+            }
+            catch (ObjectDisposedException) { 
+                break; 
+            }
         }
+        
+        ConnectionClosed();
     }
 
     public void OnServerMessage(string message)
@@ -98,16 +115,18 @@ public class ScorpMP_Client : MonoBehaviour
 
     public void ConnectionClosed()
     {
+        clientLogic.CloseConnection();
+
         stream?.Close();
         client?.Close();
-        receiveThread.Abort();
+        receiveThread?.Abort();
+
+        isConnected = false;
     }
 
     public void SendMessageToServer(string msg)
     {
-        if (client == null)
-            ConnectionClosed();
-        if (client.Connected)
+        if (isConnected)
         {
             byte[] data = Encoding.UTF8.GetBytes(msg);
             stream.Write(data, 0, data.Length);
